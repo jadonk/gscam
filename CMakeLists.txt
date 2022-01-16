@@ -2,22 +2,23 @@ cmake_minimum_required(VERSION 2.8.3)
 
 project(gscam)
 
+if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64")
+    set(BUILD_CORE_NODES          OFF)
+elseif (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
+    set(BUILD_CORE_NODES          ON CACHE BOOL "Build core nodes")
+else()
+    message(FATAL_ERROR "Unknown processor:" ${CMAKE_SYSTEM_PROCESSOR})
+endif()
+
+if(${BUILD_CORE_NODES})
+
 # System Dependencies
 find_package(PkgConfig)
 
-pkg_check_modules(GSTREAMER QUIET gstreamer-0.10)
-if(NOT GSTREAMER_FOUND)
-  set(GSTREAMER_VERSION_1_x TRUE)
-endif()
-if(GSTREAMER_VERSION_1_x)
-  message(STATUS "gst 1.0")
-  pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0)
-  pkg_check_modules(GST_APP REQUIRED gstreamer-app-1.0)
-else()
-  message(STATUS "gst 0.1")
-  pkg_check_modules(GSTREAMER REQUIRED gstreamer-0.10)
-  pkg_check_modules(GST_APP REQUIRED gstreamer-app-0.10)
-endif()
+# Removed gstreamer-0.10 support
+message(STATUS "gst 1.0")
+pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0)
+pkg_check_modules(GST_APP REQUIRED gstreamer-app-1.0)
 
 if(USE_ROSBUILD)
   # Use rosbuild
@@ -48,7 +49,7 @@ if(USE_ROSBUILD)
 
 else()
   # Use Catkin
-  find_package(catkin REQUIRED 
+  find_package(catkin REQUIRED
     COMPONENTS roscpp image_transport sensor_msgs nodelet
     camera_calibration_parsers camera_info_manager
     )
@@ -123,8 +124,8 @@ endif()
 # Interim compatibility
 # Remove this in the next distribution release
 configure_file(scripts/gscam_node.in ${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/gscam_node)
-file(COPY ${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/gscam_node 
+file(COPY ${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/gscam_node
   DESTINATION ${EXECUTABLE_OUTPUT_PATH}
   FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 
-
+endif()

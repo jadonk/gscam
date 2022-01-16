@@ -4,7 +4,6 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 
-
 #include <iostream>
 extern "C"{
 #include <gst/gst.h>
@@ -15,7 +14,6 @@ extern "C"{
 
 #include <image_transport/image_transport.h>
 #include <camera_info_manager/camera_info_manager.h>
-
 
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CompressedImage.h>
@@ -73,19 +71,33 @@ namespace gscam {
     nh_private_.param("sync_sink", sync_sink_, true);
     nh_private_.param("preroll", preroll_, false);
     nh_private_.param("use_gst_timestamps", use_gst_timestamps_, false);
-
     nh_private_.param("reopen_on_eof", reopen_on_eof_, false);
 
     // Get the camera parameters file
     nh_private_.getParam("camera_info_url", camera_info_url_);
     nh_private_.getParam("camera_name", camera_name_);
+    nh_private_.getParam("width", set_width_);
+    nh_private_.getParam("height", set_height_);
+    nh_private_.getParam("framerate", set_framerate_);
 
     // Get the image encoding
-    nh_private_.param("image_encoding", image_encoding_, sensor_msgs::image_encodings::RGB8);
+    nh_private_.param("image_encoding", image_encoding_, std::string("yuv420"));
     if (image_encoding_ != sensor_msgs::image_encodings::RGB8 &&
-        image_encoding_ != sensor_msgs::image_encodings::MONO8 && 
+        // image_encoding_ != sensor_msgs::image_encodings::MONO8 &&
+        // image_encoding_ != "yuv422" &&
+        image_encoding_ != "yuv420" &&
         image_encoding_ != "jpeg") {
       ROS_FATAL_STREAM("Unsupported image encoding: " + image_encoding_);
+    }
+
+    // Mapping between image_encoding_ and app_sink_format_
+    // 'tiovxcolorconvert' supports: RGB, NV12
+    if (image_encoding_ == sensor_msgs::image_encodings::RGB8) {
+      app_sink_format_ = "RGB";
+    } else if (image_encoding_ == "yuv420") {
+      app_sink_format_ = "NV12";
+    } else if (image_encoding_ == "jpeg") {
+      app_sink_format_ = "";
     }
 
     camera_info_manager_.setCameraName(camera_name_);
@@ -125,32 +137,24 @@ namespace gscam {
       return false;
     }
 
-    // Create RGB sink
+    // Create app sink
     sink_ = gst_element_factory_make("appsink",NULL);
     GstCaps * caps = gst_app_sink_get_caps(GST_APP_SINK(sink_));
 
-#if (GST_VERSION_MAJOR == 1)
     // http://gstreamer.freedesktop.org/data/doc/gstreamer/head/pwg/html/section-types-definitions.html
-    if (image_encoding_ == sensor_msgs::image_encodings::RGB8) {
-        caps = gst_caps_new_simple( "video/x-raw", 
-            "format", G_TYPE_STRING, "RGB",
-            NULL); 
-    } else if (image_encoding_ == sensor_msgs::image_encodings::MONO8) {
-        caps = gst_caps_new_simple( "video/x-raw", 
-            "format", G_TYPE_STRING, "GRAY8",
-            NULL); 
-    } else if (image_encoding_ == "jpeg") {
-        caps = gst_caps_new_simple("image/jpeg", NULL, NULL);
+    if (image_encoding_ == "jpeg") {
+      caps = gst_caps_new_simple("image/jpeg", NULL, NULL);
     }
-#else
-    if (image_encoding_ == sensor_msgs::image_encodings::RGB8) {
-        caps = gst_caps_new_simple( "video/x-raw-rgb", NULL,NULL); 
-    } else if (image_encoding_ == sensor_msgs::image_encodings::MONO8) {
-        caps = gst_caps_new_simple("video/x-raw-gray", NULL, NULL);
-    } else if (image_encoding_ == "jpeg") {
-        caps = gst_caps_new_simple("image/jpeg", NULL, NULL);
+    else {
+      ROS_INFO_STREAM("app_sink_format_ = "<<app_sink_format_);
+      caps = gst_caps_new_simple( "video/x-raw",
+          "format", G_TYPE_STRING, app_sink_format_.c_str(),
+          "framerate", GST_TYPE_FRACTION, set_framerate_, 1,
+          "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1,
+          "width", G_TYPE_INT, set_width_,
+          "height", G_TYPE_INT, set_height_,
+          NULL);
     }
-#endif
 
     gst_app_sink_set_caps(GST_APP_SINK(sink_), caps);
     gst_caps_unref(caps);
@@ -262,13 +266,12 @@ namespace gscam {
     }
     ROS_INFO("Started stream.");
 
-    // Poll the data as fast a spossible
-    while(ros::ok()) 
+    // Poll the data as fast as possible
+    while(ros::ok())
     {
       // This should block until a new frame is awake, this way, we'll run at the
       // actual capture framerate of the device.
       // ROS_DEBUG("Getting data...");
-#if (GST_VERSION_MAJOR == 1)
       GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(sink_));
       if(!sample) {
         ROS_ERROR("Could not get gstreamer sample.");
@@ -281,25 +284,9 @@ namespace gscam {
       gst_memory_map(memory, &info, GST_MAP_READ);
       gsize &buf_size = info.size;
       guint8* &buf_data = info.data;
-#else
-      GstBuffer* buf = gst_app_sink_pull_buffer(GST_APP_SINK(sink_));
-      guint &buf_size = buf->size;
-      guint8* &buf_data = buf->data;
-#endif
       GstClockTime bt = gst_element_get_base_time(pipeline_);
       // ROS_INFO("New buffer: timestamp %.6f %lu %lu %.3f",
       //         GST_TIME_AS_USECONDS(buf->timestamp+bt)/1e6+time_offset_, buf->timestamp, bt, time_offset_);
-
-
-#if 0
-      GstFormat fmt = GST_FORMAT_TIME;
-      gint64 current = -1;
-
-       Query the current position of the stream
-      if (gst_element_query_position(pipeline_, &fmt, &current)) {
-          ROS_INFO_STREAM("Position "<<current);
-      }
-#endif
 
       // Stop on end of stream
       if (!buf) {
@@ -311,11 +298,7 @@ namespace gscam {
 
       // Get the image width and height
       GstPad* pad = gst_element_get_static_pad(sink_, "sink");
-#if (GST_VERSION_MAJOR == 1)
       const GstCaps *caps = gst_pad_get_current_caps(pad);
-#else
-      const GstCaps *caps = gst_pad_get_negotiated_caps(pad);
-#endif
       GstStructure *structure = gst_caps_get_structure(caps,0);
       gst_structure_get_int(structure,"width",&width_);
       gst_structure_get_int(structure,"height",&height_);
@@ -325,11 +308,7 @@ namespace gscam {
       sensor_msgs::CameraInfoPtr cinfo;
       cinfo.reset(new sensor_msgs::CameraInfo(cur_cinfo));
       if (use_gst_timestamps_) {
-#if (GST_VERSION_MAJOR == 1)
           cinfo->header.stamp = ros::Time(GST_TIME_AS_USECONDS(buf->pts+bt)/1e6+time_offset_);
-#else
-          cinfo->header.stamp = ros::Time(GST_TIME_AS_USECONDS(buf->timestamp+bt)/1e6+time_offset_);
-#endif
       } else {
           cinfo->header.stamp = ros::Time::now();
       }
@@ -346,10 +325,16 @@ namespace gscam {
           cinfo_pub_.publish(cinfo);
       } else {
           // Complain if the returned buffer is smaller than we expect
-          const unsigned int expected_frame_size =
-              image_encoding_ == sensor_msgs::image_encodings::RGB8
-              ? width_ * height_ * 3
-              : width_ * height_;
+          unsigned int expected_frame_size;
+          if (image_encoding_ == sensor_msgs::image_encodings::RGB8) {
+              expected_frame_size = width_ * height_ * 3;
+          }
+          else if (image_encoding_ == "yuv420") {
+              expected_frame_size = width_ * height_ * 1.5;
+          }
+          else {
+              expected_frame_size = width_ * height_;
+          }
 
           if (buf_size < expected_frame_size) {
               ROS_WARN_STREAM( "GStreamer image buffer underflow: Expected frame to be "
@@ -374,12 +359,12 @@ namespace gscam {
           // we can free the buffer allocated by gstreamer
           if (image_encoding_ == sensor_msgs::image_encodings::RGB8) {
               img->step = width_ * 3;
+          } else if (image_encoding_ == "yuv420") { // NV12
+              img->step = width_ * 1.5;
           } else {
               img->step = width_;
           }
-          std::copy(
-                  buf_data,
-                  (buf_data)+(buf_size),
+          std::copy(buf_data, (buf_data)+(buf_size),
                   img->data.begin());
 
           // Publish the image/info
@@ -388,11 +373,11 @@ namespace gscam {
 
       // Release the buffer
       if(buf) {
-#if (GST_VERSION_MAJOR == 1)
         gst_memory_unmap(memory, &info);
         gst_memory_unref(memory);
-#endif
-        gst_buffer_unref(buf);
+        // https://github.com/clydemcqueen/gscam2/issues/9
+        // gst_buffer_unref(buf);
+        gst_sample_unref(sample);
       }
 
       ros::spinOnce();

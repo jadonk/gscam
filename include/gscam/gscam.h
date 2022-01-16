@@ -47,15 +47,21 @@ namespace gscam {
 
     // Camera publisher configuration
     std::string frame_id_;
-    int width_, height_;
+    int width_;
+    int height_;
     std::string image_encoding_;
     std::string camera_name_;
     std::string camera_info_url_;
+    int set_width_;
+    int set_height_;
+    int set_framerate_;
+    std::string app_sink_format_;
 
     // ROS Inteface
     // Calibration between ros::Time and gst timestamps
     double time_offset_;
-    ros::NodeHandle nh_, nh_private_;
+    ros::NodeHandle nh_;
+    ros::NodeHandle nh_private_;
     image_transport::ImageTransport image_transport_;
     camera_info_manager::CameraInfoManager camera_info_manager_;
     image_transport::CameraPublisher camera_pub_;
